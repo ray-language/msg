@@ -1,0 +1,49 @@
+// Cache LRU de msg_id para deduplicar gossip.
+import std/hex;
+
+const DEFAULT_LIMIT: int = 10000;
+
+/// Seen-message cache keyed by hex(msg_id).
+pub struct Cache {
+    map: Map<string, int>,
+    order: [string],
+    limit: int,
+}
+
+pub fn new() -> Cache {
+    let m: Map<string, int> = Map.new();
+    Cache { map: m, order: [], limit: DEFAULT_LIMIT }
+}
+
+/// Returns true if this id was already seen; otherwise records it and returns false.
+pub fn check_and_insert(c: Cache, msg_id: bytes) -> bool {
+    let key = hex.hex_encode(msg_id);
+    if (c.map.contains_key(key)) {
+        true
+    } else {
+        c.map.insert(key, 1);
+        c.order.push(key);
+        while (c.order.len() > c.limit) {
+            let old = c.order[0];
+            // shift left
+            var rest: [string] = [];
+            var i = 1;
+            while (i < c.order.len()) {
+                rest.push(c.order[i]);
+                i = i + 1;
+            }
+            c.order = rest;
+            c.map.remove(old);
+        }
+        false
+    }
+}
+
+@test
+fn dedup_works() {
+    var c = new();
+    let id = b"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10"
+        + b"\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20";
+    assert(!check_and_insert(c, id));
+    assert(check_and_insert(c, id));
+}

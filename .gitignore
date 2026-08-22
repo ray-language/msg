@@ -1,0 +1,9 @@
+# Raylang / build
+*.o
+/msg
+/target/
+
+# Local identity (never commit)
+.config/
+identity
+*.seed

@@ -1,0 +1,131 @@
+// Parser de comandos estilo IRC y texto libre al canal activo.
+import crypto_chan;
+
+pub enum Action {
+    Quit,
+    Help,
+    Nick(string),
+    Join(string, string),
+    Part(string),
+    Peers,
+    Who(string),
+    Invite(string),
+    Dm(string, string),
+    Chat(string),
+    Unknown(string),
+}
+
+/// Parses one input line into an Action.
+pub fn parse(line: string, active: string) -> Action {
+    let t = line.trim();
+    if (t.len() == 0) {
+        return Action.Chat("");
+    }
+    if (!t.starts_with("/")) {
+        return Action.Chat(t);
+    }
+    // command
+    let rest = t.substring(1, t.len());
+    let parts = split_ws(rest);
+    if (parts.len() == 0) {
+        return Action.Help;
+    }
+    let cmd = parts[0].to_lower();
+    if (cmd == "quit" || cmd == "exit" || cmd == "q") {
+        Action.Quit
+    } else if (cmd == "help" || cmd == "h" || cmd == "?") {
+        Action.Help
+    } else if (cmd == "nick") {
+        if (parts.len() < 2) { Action.Unknown("usage: /nick NAME") } else { Action.Nick(parts[1]) }
+    } else if (cmd == "join") {
+        if (parts.len() < 2) {
+            Action.Unknown("usage: /join #chan [invite]")
+        } else {
+            let inv = if (parts.len() >= 3) { parts[2] } else { "" };
+            Action.Join(parts[1], inv)
+        }
+    } else if (cmd == "part") {
+        let ch = if (parts.len() >= 2) { parts[1] } else { active };
+        Action.Part(ch)
+    } else if (cmd == "peers") {
+        Action.Peers
+    } else if (cmd == "who") {
+        let ch = if (parts.len() >= 2) { parts[1] } else { active };
+        Action.Who(ch)
+    } else if (cmd == "invite") {
+        let ch = if (parts.len() >= 2) { parts[1] } else { active };
+        if (ch.len() == 0) {
+            Action.Unknown("usage: /invite #chan")
+        } else {
+            Action.Invite(ch)
+        }
+    } else if (cmd == "msg" || cmd == "query") {
+        if (parts.len() < 3) {
+            Action.Unknown("usage: /msg NICK text")
+        } else {
+            var text = parts[2];
+            var i = 3;
+            while (i < parts.len()) {
+                text = text + " " + parts[i];
+                i = i + 1;
+            }
+            Action.Dm(parts[1], text)
+        }
+    } else {
+        Action.Unknown("unknown command: /" + cmd + " (try /help)")
+    }
+}
+
+fn split_ws(s: string) -> [string] {
+    var out: [string] = [];
+    var cur = "";
+    for ch in s.chars() {
+        if (ch == ' ' || ch == '\t') {
+            if (cur.len() > 0) {
+                out.push(cur);
+                cur = "";
+            }
+        } else {
+            cur = cur + to_string(ch);
+        }
+    }
+    if (cur.len() > 0) {
+        out.push(cur);
+    }
+    out
+}
+
+pub fn help_text() -> string {
+    "commands: /nick /join #chan [invite] /part /msg NICK text [/who] /peers /invite [/help] /quit"
+}
+
+/// Creates a fresh invite string for `/invite`.
+pub fn fresh_invite() -> string {
+    crypto_chan.generate_invite()
+}
+
+@test
+fn parse_join_and_chat() {
+    match (parse("/join #lab secret", "")) {
+        Action.Join(ch, inv) => {
+            assert(ch == "#lab");
+            assert(inv == "secret");
+        },
+        _ => panic("expected join"),
+    }
+    match (parse("hola mundo", "#lab")) {
+        Action.Chat(t) => assert(t == "hola mundo"),
+        _ => panic("expected chat"),
+    }
+    match (parse("/quit", "")) {
+        Action.Quit => { },
+        _ => panic("expected quit"),
+    }
+    match (parse("/msg bob hola alli", "")) {
+        Action.Dm(n, t) => {
+            assert(n == "bob");
+            assert(t == "hola alli");
+        },
+        _ => panic("expected dm"),
+    }
+}

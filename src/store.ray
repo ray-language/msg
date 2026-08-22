@@ -1,0 +1,83 @@
+// Persistencia de bootstraps (una dirección host:port por línea).
+import std/fs;
+
+fn peers_path(dir: string) -> string {
+    dir + "/peers"
+}
+
+/// Loads saved bootstrap addresses (ignores blank lines and comments).
+pub fn load_peers(dir: string) -> [string] {
+    var out: [string] = [];
+    let path = peers_path(dir);
+    if (!fs.exists(path)) {
+        return out;
+    }
+    match (fs.read_file(path)) {
+        Result.Err(_) => out,
+        Result.Ok(text) => {
+            for line in text.split("\n") {
+                let t = line.trim();
+                if (t.len() > 0 && !t.starts_with("#")) {
+                    out.push(t);
+                }
+            }
+            out
+        },
+    }
+}
+
+fn ensure_dir(dir: string) -> Result<int, string> {
+    if (fs.exists(dir)) {
+        Result.Ok(0)
+    } else {
+        fs.mkdir(dir)
+    }
+}
+
+/// Appends `addr` to peers file if not already listed.
+pub fn remember_peer(dir: string, addr: string) {
+    let a = addr.trim();
+    if (a.len() == 0 || a.starts_with("inbound:")) {
+        return;
+    }
+    let existing = load_peers(dir);
+    for e in existing {
+        if (e == a) {
+            return;
+        }
+    }
+    match (ensure_dir(dir)) {
+        Result.Err(_) => { },
+        Result.Ok(_) => {
+            let _ = fs.append_file(peers_path(dir), a + "\n");
+        },
+    }
+}
+
+/// Merges CLI peers with saved ones (CLI first, then file; dedup).
+pub fn merge_peers(cli: [string], saved: [string]) -> [string] {
+    var out: [string] = [];
+    for a in cli {
+        var seen = false;
+        for e in out {
+            if (e == a) { seen = true; }
+        }
+        if (!seen) { out.push(a); }
+    }
+    for a in saved {
+        var seen = false;
+        for e in out {
+            if (e == a) { seen = true; }
+        }
+        if (!seen) { out.push(a); }
+    }
+    out
+}
+
+@test
+fn merge_dedups() {
+    let m = merge_peers(["127.0.0.1:7700"], ["127.0.0.1:7700", "127.0.0.1:7701"]);
+    assert(m.len() == 2);
+    assert(m[0] == "127.0.0.1:7700");
+    assert(m[1] == "127.0.0.1:7701");
+}

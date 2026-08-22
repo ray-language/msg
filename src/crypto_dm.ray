@@ -1,0 +1,92 @@
+// Sealed-box DMs: ephemeral X25519 + HKDF + ChaCha20-Poly1305.
+import std/crypto;
+
+const INFO: bytes = b"msg-dm-v1";
+
+fn empty_bytes() -> bytes {
+    let none: [int] = [];
+    bytes_of(none)
+}
+
+fn derive_key_nonce(dh: bytes, eph_pk: bytes, recipient_x_pk: bytes) -> Result<(bytes, bytes), string> {
+    let salt = eph_pk + recipient_x_pk;
+    match (crypto.hkdf_sha256(salt, dh, INFO, 44)) {
+        Option.None => Result.Err("hkdf failed"),
+        Option.Some(km) => Result.Ok((km.sub_bytes(0, 32), km.sub_bytes(32, 44))),
+    }
+}
+
+/// Seals `plaintext` to `recipient_x_pk`. Returns `eph_pk ‖ ciphertext`.
+pub fn seal(recipient_x_pk: bytes, aad: bytes, plaintext: bytes) -> Result<bytes, string> {
+    let eph_sk = crypto.random_bytes(32);
+    match (crypto.x25519_public_key(eph_sk)) {
+        Option.None => Result.Err("ephemeral pubkey failed"),
+        Option.Some(eph_pk) => match (crypto.x25519_shared_secret(eph_sk, recipient_x_pk)) {
+            Option.None => Result.Err("x25519 shared secret failed"),
+            Option.Some(dh) => match (derive_key_nonce(dh, eph_pk, recipient_x_pk)) {
+                Result.Err(e) => Result.Err(e),
+                Result.Ok(pair) => {
+                    let (key, nonce) = pair;
+                    match (crypto.chacha20poly1305_seal(key, nonce, aad, plaintext)) {
+                        Option.None => Result.Err("dm seal failed"),
+                        Option.Some(ct) => Result.Ok(eph_pk + ct),
+                    }
+                },
+            },
+        },
+    }
+}
+
+/// Opens a sealed DM payload with our long-term X25519 secret.
+pub fn open(my_x_secret: bytes, recipient_x_pk: bytes, aad: bytes, sealed: bytes) -> Result<bytes, string> {
+    if (sealed.len() < 32 + 16) {
+        return Result.Err("dm payload too short");
+    }
+    let eph_pk = sealed.sub_bytes(0, 32);
+    let ct = sealed.sub_bytes(32, sealed.len());
+    match (crypto.x25519_shared_secret(my_x_secret, eph_pk)) {
+        Option.None => Result.Err("x25519 open dh failed"),
+        Option.Some(dh) => match (derive_key_nonce(dh, eph_pk, recipient_x_pk)) {
+            Result.Err(e) => Result.Err(e),
+            Result.Ok(pair) => {
+                let (key, nonce) = pair;
+                match (crypto.chacha20poly1305_open(key, nonce, aad, ct)) {
+                    Option.None => Result.Err("dm decrypt failed"),
+                    Option.Some(pt) => Result.Ok(pt),
+                }
+            },
+        },
+    }
+}
+
+/// AAD for a DM: destination Ed25519 ‖ origin Ed25519 ‖ seq_be64.
+pub fn aad_for(dest_ed: bytes, origin_ed: bytes, seq: int) -> bytes {
+    dest_ed + origin_ed + bytes_of([
+        (seq >> 56) & 255,
+        (seq >> 48) & 255,
+        (seq >> 40) & 255,
+        (seq >> 32) & 255,
+        (seq >> 24) & 255,
+        (seq >> 16) & 255,
+        (seq >> 8) & 255,
+        seq & 255
+    ])
+}
+
+@test
+fn dm_roundtrip() {
+    let sk_b = crypto.random_bytes(32);
+    match (crypto.x25519_public_key(sk_b)) {
+        Option.None => panic("pk"),
+        Option.Some(pk_b) => {
+            let aad = aad_for(crypto.random_bytes(32), crypto.random_bytes(32), 7);
+            match (seal(pk_b, aad, b"hola dm")) {
+                Result.Err(e) => panic(e),
+                Result.Ok(sealed) => match (open(sk_b, pk_b, aad, sealed)) {
+                    Result.Err(e) => panic(e),
+                    Result.Ok(pt) => assert(pt == b"hola dm"),
+                },
+            }
+        },
+    }
+}

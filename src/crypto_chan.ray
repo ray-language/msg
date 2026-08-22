@@ -1,0 +1,136 @@
+// Invite → channel key (ChaCha20-Poly1305) y helpers de AEAD.
+import std/crypto;
+import std/hex;
+
+const INFO: bytes = b"msg-chan-v1";
+const SALT_LEN: int = 16;
+const SECRET_LEN: int = 16;
+
+/// Strips dashes/spaces and lowercases invite hex.
+pub fn normalize_invite(raw: string) -> string {
+    raw.trim().to_lower().replace("-", "").replace(" ", "")
+}
+
+/// Generates a fresh invite: hex(salt_16 ‖ secret_16), grouped xxxx-… .
+pub fn generate_invite() -> string {
+    let raw = crypto.random_bytes(SALT_LEN + SECRET_LEN);
+    format_grouped(hex.hex_encode(raw))
+}
+
+fn format_grouped(h: string) -> string {
+    // 64 hex chars → 8 grupos de 4
+    var out = "";
+    var i = 0;
+    while (i < h.len()) {
+        if (i > 0) {
+            out = out + "-";
+        }
+        out = out + h.substring(i, i + 4);
+        i = i + 4;
+    }
+    out
+}
+
+/// Derives a 32-byte channel key from a normalized invite (64 hex chars).
+pub fn derive_key(invite: string) -> Result<bytes, string> {
+    let norm = normalize_invite(invite);
+    if (norm.len() == 0) {
+        return Result.Err("empty invite");
+    }
+    if (norm.len() != 64) {
+        return Result.Err("invite must be 32 bytes hex (64 chars)");
+    }
+    match (hex.hex_decode(norm)) {
+        Result.Err(e) => Result.Err(e),
+        Result.Ok(raw) => {
+            let salt = raw.sub_bytes(0, SALT_LEN);
+            let secret = raw.sub_bytes(SALT_LEN, SALT_LEN + SECRET_LEN);
+            let pw = crypto.sha256(secret);
+            Result.Ok(crypto.hmac_sha256(pw, salt + INFO))
+        },
+    }
+}
+
+pub fn nonce_for(seq: int) -> bytes {
+    // seq u64 BE ‖ 4 zero bytes
+    bytes_of([
+        (seq >> 56) & 255,
+        (seq >> 48) & 255,
+        (seq >> 40) & 255,
+        (seq >> 32) & 255,
+        (seq >> 24) & 255,
+        (seq >> 16) & 255,
+        (seq >> 8) & 255,
+        seq & 255,
+        0,
+        0,
+        0,
+        0
+    ])
+}
+
+pub fn aad_for(channel: string, origin_pub: bytes, seq: int) -> bytes {
+    channel.to_bytes() + origin_pub + nonce_for(seq).sub_bytes(0, 8)
+}
+
+pub fn seal(
+    key: bytes,
+    seq: int,
+    channel: string,
+    origin_pub: bytes,
+    plaintext: bytes
+) -> Result<bytes, string> {
+    let nonce = nonce_for(seq);
+    let aad = aad_for(channel, origin_pub, seq);
+    match (crypto.chacha20poly1305_seal(key, nonce, aad, plaintext)) {
+        Option.None => Result.Err("seal failed"),
+        Option.Some(ct) => Result.Ok(ct),
+    }
+}
+
+pub fn open(
+    key: bytes,
+    seq: int,
+    channel: string,
+    origin_pub: bytes,
+    ciphertext: bytes
+) -> Result<bytes, string> {
+    let nonce = nonce_for(seq);
+    let aad = aad_for(channel, origin_pub, seq);
+    match (crypto.chacha20poly1305_open(key, nonce, aad, ciphertext)) {
+        Option.None => Result.Err("decrypt failed (wrong invite or tampered)"),
+        Option.Some(pt) => Result.Ok(pt),
+    }
+}
+
+@test
+fn invite_roundtrip_key() {
+    let inv = generate_invite();
+    match (derive_key(inv)) {
+        Result.Err(e) => panic(e),
+        Result.Ok(k1) => {
+            assert(k1.len() == 32);
+            match (derive_key(normalize_invite(inv))) {
+                Result.Err(e) => panic(e),
+                Result.Ok(k2) => assert(k1 == k2),
+            }
+        },
+    }
+}
+
+@test
+fn seal_open_roundtrip() {
+    match (derive_key(generate_invite())) {
+        Result.Err(e) => panic(e),
+        Result.Ok(key) => {
+            let origin = crypto.random_bytes(32);
+            match (seal(key, 1, "#lab", origin, b"hola")) {
+                Result.Err(e) => panic(e),
+                Result.Ok(ct) => match (open(key, 1, "#lab", origin, ct)) {
+                    Result.Err(e) => panic(e),
+                    Result.Ok(pt) => assert(pt == b"hola"),
+                },
+            }
+        },
+    }
+}

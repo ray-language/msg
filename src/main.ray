@@ -1,0 +1,114 @@
+// msg — distributed P2P chat (IRC-inspired mesh).
+import identity;
+import mesh;
+import protocol;
+import store;
+
+fn usage() {
+    eprint("usage:");
+    eprint(
+        "  msg [--listen HOST:PORT] [--peer HOST:PORT]... [--nick NAME] [--config DIR] [--advertise HOST]"
+    );
+    eprint("");
+    eprint("  --listen     bind address (default 0.0.0.0:" + to_string(protocol.DEFAULT_PORT) + ")");
+    eprint("  --peer       bootstrap peer (repeatable; also loaded from config/peers)");
+    eprint("  --nick       display name (persisted)");
+    eprint("  --config     identity directory (default ~/.config/msg)");
+    eprint("  --advertise  host published in PeerExchange (e.g. 127.0.0.1)");
+}
+
+fn flag_value(av: [string], name: string) -> Option<string> {
+    var i = 0;
+    while (i + 1 < av.len()) {
+        if (av[i] == name) {
+            return Option.Some(av[i + 1]);
+        }
+        i = i + 1;
+    }
+    Option.None
+}
+
+fn flag_values(av: [string], name: string) -> [string] {
+    var out: [string] = [];
+    var i = 0;
+    while (i + 1 < av.len()) {
+        if (av[i] == name) {
+            out.push(av[i + 1]);
+            i = i + 2;
+        } else {
+            i = i + 1;
+        }
+    }
+    out
+}
+
+fn parse_listen(s: string) -> Result<(string, int), string> {
+    let parts = s.split(":");
+    if (parts.len() == 1) {
+        match (parse_int(parts[0])) {
+            Option.None => Result.Err("invalid --listen"),
+            Option.Some(p) => Result.Ok(("0.0.0.0", p)),
+        }
+    } else if (parts.len() == 2) {
+        match (parse_int(parts[1])) {
+            Option.None => Result.Err("invalid --listen port"),
+            Option.Some(p) => Result.Ok((parts[0], p)),
+        }
+    } else {
+        Result.Err("invalid --listen HOST:PORT")
+    }
+}
+
+fn main() -> int {
+    let av = args();
+    for a in av {
+        if (a == "--help" || a == "-h" || a == "help") {
+            usage();
+            return 0;
+        }
+    }
+
+    let config = match (flag_value(av, "--config")) {
+        Option.Some(d) => d,
+        Option.None => identity.default_config_dir(),
+    };
+    let nick = match (flag_value(av, "--nick")) {
+        Option.Some(n) => n,
+        Option.None => "",
+    };
+    let listen_s = match (flag_value(av, "--listen")) {
+        Option.Some(s) => s,
+        Option.None => "0.0.0.0:" + to_string(protocol.DEFAULT_PORT),
+    };
+    let advertise = match (flag_value(av, "--advertise")) {
+        Option.Some(h) => h,
+        Option.None => "",
+    };
+    let cli_peers = flag_values(av, "--peer");
+    let peers = store.merge_peers(cli_peers, store.load_peers(config));
+
+    match (parse_listen(listen_s)) {
+        Result.Err(e) => {
+            eprint(e);
+            usage();
+            1
+        },
+        Result.Ok(hp) => {
+            let (bind_host, bind_port) = hp;
+            match (identity.load(config, nick)) {
+                Result.Err(e) => {
+                    eprint("identity: " + e);
+                    1
+                },
+                Result.Ok(id) => mesh.run(mesh.Opts {
+                    id: id,
+                    config_dir: config,
+                    bind_host: bind_host,
+                    bind_port: bind_port,
+                    advertise: advertise,
+                    peers: peers,
+                }),
+            }
+        },
+    }
+}

@@ -1,0 +1,47 @@
+// Estado local de canales (nombre, invite, clave AEAD opcional).
+import crypto_chan;
+
+/// A joined channel: empty invite ⇒ public (signed plaintext only).
+pub struct Chan {
+    name: string,
+    invite: string,
+    key: Option<bytes>,
+}
+
+pub fn normalize_name(raw: string) -> string {
+    let t = raw.trim();
+    if (t.len() == 0) {
+        ""
+    } else if (t.starts_with("#")) {
+        t.to_lower()
+    } else {
+        ("#" + t).to_lower()
+    }
+}
+
+/// Joins or updates a channel. Empty invite ⇒ public.
+pub fn enter(name: string, invite: string) -> Result<Chan, string> {
+    let n = normalize_name(name);
+    if (n.len() < 2) {
+        return Result.Err("channel name required");
+    }
+    let inv = invite.trim();
+    if (inv.len() == 0) {
+        Result.Ok(Chan { name: n, invite: "", key: Option.None })
+    } else {
+        match (crypto_chan.derive_key(inv)) {
+            Result.Err(e) => Result.Err(e),
+            Result.Ok(key) => Result.Ok(Chan {
+                name: n,
+                invite: crypto_chan.normalize_invite(inv),
+                key: Option.Some(key),
+            }),
+        }
+    }
+}
+
+@test
+fn normalize_adds_hash() {
+    assert(normalize_name("Lab") == "#lab");
+    assert(normalize_name("#Dev") == "#dev");
+}

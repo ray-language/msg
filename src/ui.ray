@@ -1,0 +1,68 @@
+// Lectura de líneas por fibra (`io.read` aparca; no bloquea la VM).
+import std/io;
+
+/// Line reader with a leftover buffer (one `io.read` may contain several lines).
+pub struct Reader {
+    buf: string,
+}
+
+pub fn reader() -> Reader {
+    Reader { buf: "" }
+}
+
+/// Reads one line from stdin (without trailing \\n). None = EOF.
+pub fn read_line(r: Reader) -> Option<string> {
+    while (true) {
+        // Consume a complete line already in the buffer.
+        var i = 0;
+        while (i < r.buf.len()) {
+            if (r.buf[i] == '\n') {
+                let line = r.buf.substring(0, i);
+                r.buf = r.buf.substring(i + 1, r.buf.len());
+                // Strip trailing CR
+                if (line.len() > 0 && line[line.len() - 1] == '\r') {
+                    return Option.Some(line.substring(0, line.len() - 1));
+                }
+                return Option.Some(line);
+            }
+            i = i + 1;
+        }
+        match (io.read(512)) {
+            Option.None => {
+                if (r.buf.len() == 0) {
+                    return Option.None;
+                } else {
+                    let line = r.buf;
+                    r.buf = "";
+                    return Option.Some(line);
+                }
+            },
+            Option.Some(chunk) => {
+                match (from_utf8(chunk)) {
+                    Result.Err(_) => { },
+                    Result.Ok(s) => { r.buf = r.buf + s; },
+                }
+            },
+        }
+    }
+    Option.None
+}
+
+pub fn prompt() {
+    match (io.write("> ")) {
+        Result.Ok(_) => { let _ = io.flush(); },
+        Result.Err(_) => { },
+    }
+}
+
+pub fn info(msg: string) {
+    print(msg);
+}
+
+pub fn chat_line(channel: string, nick: string, text: string) {
+    print("[" + channel + "] " + nick + ": " + text);
+}
+
+pub fn dm_line(nick: string, text: string) {
+    print("*" + nick + "* " + text);
+}

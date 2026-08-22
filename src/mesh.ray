@@ -1,0 +1,913 @@
+// Malla TCP: accept/dial, Hello, hub actor, gossip, PeerExchange.
+import std/net;
+import std/hex;
+import framing;
+import identity;
+import protocol;
+import gossip;
+import channels;
+import commands;
+import crypto_chan;
+import crypto_dm;
+import store;
+import ui;
+
+/// Runtime options from the CLI.
+pub struct Opts {
+    id: identity.Identity,
+    config_dir: string,
+    bind_host: string,
+    bind_port: int,
+    advertise: string,
+    peers: [string],
+}
+
+enum Msg {
+    Quit,
+    Line(string),
+    LinkUp(Peer),
+    LinkDown(int),
+    InEnv(int, protocol.Envelope),
+    TryDial(string),
+}
+
+struct Peer {
+    id: int,
+    nick: string,
+    pubkey: bytes,
+    x_pubkey: bytes,
+    addr: string,
+    listen_port: int,
+    out: Channel<protocol.Envelope>,
+}
+
+struct State {
+    id: identity.Identity,
+    config_dir: string,
+    bind_port: int,
+    advertise: string,
+    peers: [Peer],
+    nicks: Map<string, string>,
+    /// nick lowercase → ed25519 pubkey hex
+    ed_by_nick: Map<string, string>,
+    /// ed25519 hex → x25519 pubkey
+    x_by_ed: Map<string, bytes>,
+    chans: Map<string, channels.Chan>,
+    active: string,
+    seq: int,
+    seen: gossip.Cache,
+    trying: Map<string, int>,
+    linked: Map<string, int>,
+}
+
+fn parse_addr(s: string) -> Result<(string, int), string> {
+    let parts = s.split(":");
+    if (parts.len() != 2) {
+        return Result.Err("address must be host:port");
+    }
+    match (parse_int(parts[1])) {
+        Option.None => Result.Err("invalid port"),
+        Option.Some(p) => Result.Ok((parts[0], p)),
+    }
+}
+
+fn pub_hex(pk: bytes) -> string {
+    hex.hex_encode(pk)
+}
+
+fn handshake_listener(
+    c: framing.Conn,
+    id: identity.Identity,
+    listen_port: int
+) -> Result<(framing.Conn, protocol.Hello), string> {
+    match (protocol.make_hello(id, listen_port)) {
+        Result.Err(e) => Result.Err(e),
+        Result.Ok(h) => match (protocol.send_hello(c, h)) {
+            Result.Err(e) => Result.Err(e),
+            Result.Ok(c1) => protocol.recv_hello(c1),
+        },
+    }
+}
+
+fn handshake_dialer(
+    c: framing.Conn,
+    id: identity.Identity,
+    listen_port: int
+) -> Result<(framing.Conn, protocol.Hello), string> {
+    match (protocol.recv_hello(c)) {
+        Result.Err(e) => Result.Err(e),
+        Result.Ok(pair) => {
+            let (c1, remote) = pair;
+            match (protocol.make_hello(id, listen_port)) {
+                Result.Err(e) => Result.Err(e),
+                Result.Ok(h) => match (protocol.send_hello(c1, h)) {
+                    Result.Err(e) => Result.Err(e),
+                    Result.Ok(c2) => Result.Ok((c2, remote)),
+                },
+            }
+        },
+    }
+}
+
+fn writer_loop(c0: framing.Conn, out: Channel<protocol.Envelope>) {
+    var c = c0;
+    while (true) {
+        match (recv(out)) {
+            Option.None => {
+                framing.close_conn(c);
+                return;
+            },
+            Option.Some(env) => {
+                match (protocol.send_envelope(c, env)) {
+                    Result.Err(_) => {
+                        framing.close_conn(c);
+                        return;
+                    },
+                    Result.Ok(c2) => { c = c2; },
+                }
+            },
+        }
+    }
+}
+
+fn reader_loop(c0: framing.Conn, peer_id: int, hub: Channel<Msg>) {
+    var c = c0;
+    while (true) {
+        match (protocol.recv_envelope(c)) {
+            Result.Err(_) => {
+                send(hub, Msg.LinkDown(peer_id));
+                framing.close_conn(c);
+                return;
+            },
+            Result.Ok(pair) => {
+                let (c2, env) = pair;
+                c = c2;
+                send(hub, Msg.InEnv(peer_id, env));
+            },
+        }
+    }
+}
+
+fn spawn_link(
+    hub: Channel<Msg>,
+    id: identity.Identity,
+    listen_port: int,
+    handle: int,
+    addr: string,
+    as_listener: bool,
+    peer_id: int
+) {
+    let conn0 = framing.from_handle(handle);
+    let hs = if (as_listener) {
+        handshake_listener(conn0, id, listen_port)
+    } else {
+        handshake_dialer(conn0, id, listen_port)
+    };
+    match (hs) {
+        Result.Err(e) => {
+            ui.info("handshake failed (" + addr + "): " + e);
+            framing.close_conn(conn0);
+        },
+        Result.Ok(pair) => {
+            let (c2, remote) = pair;
+            if (remote.pubkey == id.pubkey) {
+                ui.info(
+                    "handshake rejected (" + addr
+                        + "): same identity as this node — use a different --config or MSG_HOME per peer"
+                );
+                framing.close_conn(c2);
+                return;
+            }
+            let out: Channel<protocol.Envelope> = Channel.new();
+            send(hub, Msg.LinkUp(Peer {
+                id: peer_id,
+                nick: remote.nick,
+                pubkey: remote.pubkey,
+                x_pubkey: remote.x_pubkey,
+                addr: addr,
+                listen_port: remote.listen_port,
+                out: out,
+            }));
+            // Separate Conn buffers: reader and writer only share the socket handle.
+            let wh = c2.handle;
+            spawn(fn() { writer_loop(framing.from_handle(wh), out); });
+            spawn(fn() { reader_loop(c2, peer_id, hub); });
+        },
+    }
+}
+
+fn id_allocator(id_ch: Channel<int>, ticket: Channel<int>) {
+    var n = 1;
+    while (true) {
+        match (recv(ticket)) {
+            Option.None => { return; },
+            Option.Some(_) => {
+                send(id_ch, n);
+                n = n + 1;
+            },
+        }
+    }
+}
+
+fn alloc_id(id_ch: Channel<int>, ticket: Channel<int>) -> int {
+    send(ticket, 1);
+    match (recv(id_ch)) {
+        Option.Some(n) => n,
+        Option.None => 0,
+    }
+}
+
+fn accept_loop(
+    hub: Channel<Msg>,
+    id: identity.Identity,
+    bind_host: string,
+    bind_port: int,
+    id_ch: Channel<int>,
+    ticket: Channel<int>
+) {
+    match (net.tcp_listen(bind_host, bind_port)) {
+        Result.Err(e) => {
+            ui.info("listen failed: " + e);
+            send(hub, Msg.Quit);
+        },
+        Result.Ok(listener) => {
+            ui.info("listening on " + bind_host + ":" + to_string(bind_port));
+            while (true) {
+                match (net.tcp_accept(listener)) {
+                    Result.Err(e) => {
+                        ui.info("accept error: " + e);
+                        return;
+                    },
+                    Result.Ok(h) => {
+                        let peer_id = alloc_id(id_ch, ticket);
+                        spawn(fn() {
+                            spawn_link(
+                                hub,
+                                id,
+                                bind_port,
+                                h,
+                                "inbound:" + to_string(peer_id),
+                                true,
+                                peer_id
+                            );
+                        });
+                    },
+                }
+            }
+        },
+    }
+}
+
+
+fn dial_one(
+    hub: Channel<Msg>,
+    id: identity.Identity,
+    listen_port: int,
+    addr: string,
+    peer_id: int
+) {
+    ui.info("dialing " + addr + " …");
+    match (parse_addr(addr)) {
+        Result.Err(e) => ui.info("bad peer " + addr + ": " + e),
+        Result.Ok(hp) => {
+            let (host, port) = hp;
+            match (net.tcp_connect(host, port)) {
+                Result.Err(e) => ui.info("connect " + addr + " failed: " + e),
+                Result.Ok(h) => {
+                    spawn_link(hub, id, listen_port, h, addr, false, peer_id);
+                },
+            }
+        },
+    }
+}
+
+fn broadcast(peers: [Peer], env: protocol.Envelope, except: int) {
+    for p in peers {
+        if (p.id != except) {
+            send(p.out, env);
+        }
+    }
+}
+
+fn send_to(peers: [Peer], peer_id: int, env: protocol.Envelope) {
+    for p in peers {
+        if (p.id == peer_id) {
+            send(p.out, env);
+        }
+    }
+}
+
+fn bump_seq(st: State) -> int {
+    st.seq = st.seq + 1;
+    st.seq
+}
+
+fn dialable_hints(st: State) -> [protocol.PeerHint] {
+    var hints: [protocol.PeerHint] = [];
+    if (st.advertise.len() > 0) {
+        hints.push(protocol.PeerHint {
+            host: st.advertise,
+            port: st.bind_port,
+            pubkey: st.id.pubkey,
+        });
+    }
+    for p in st.peers {
+        if (!p.addr.starts_with("inbound:")) {
+            match (parse_addr(p.addr)) {
+                Result.Err(_) => { },
+                Result.Ok(hp) => {
+                    let (host, port) = hp;
+                    hints.push(protocol.PeerHint {
+                        host: host,
+                        port: port,
+                        pubkey: p.pubkey,
+                    });
+                },
+            }
+        }
+    }
+    hints
+}
+
+fn send_peer_exchange(st: State, to_id: int) -> State {
+    var state = st;
+    let body = protocol.encode_peer_exchange(dialable_hints(state));
+    let seq = bump_seq(state);
+    match (protocol.make_envelope(state.id, protocol.KIND_PEER_EXCHANGE, 0, seq, body)) {
+        Result.Err(e) => {
+            ui.info("peer exchange failed: " + e);
+            state
+        },
+        Result.Ok(env) => {
+            send_to(state.peers, to_id, env);
+            state
+        },
+    }
+}
+
+fn already_linked(st: State, pubkey: bytes) -> bool {
+    st.linked.contains_key(pub_hex(pubkey))
+}
+
+fn queue_discovered(st: State, hub: Channel<Msg>, hints: [protocol.PeerHint]) -> State {
+    var state = st;
+    for h in hints {
+        if (h.pubkey == state.id.pubkey) {
+            // skip self
+        } else if (already_linked(state, h.pubkey)) {
+            // already connected
+        } else {
+            let addr = h.host + ":" + to_string(h.port);
+            if (state.trying.contains_key(addr)) {
+                // dial in flight or known
+            } else {
+                state.trying.insert(addr, 1);
+                store.remember_peer(state.config_dir, addr);
+                send(hub, Msg.TryDial(addr));
+            }
+        }
+    }
+    state
+}
+
+fn publish(st: State, kind: int, body: bytes) -> State {
+    var state = st;
+    let seq = bump_seq(state);
+    match (protocol.make_envelope(state.id, kind, protocol.DEFAULT_HOPS, seq, body)) {
+        Result.Err(e) => {
+            ui.info("publish failed: " + e);
+            state
+        },
+        Result.Ok(env) => {
+            let _ = gossip.check_and_insert(state.seen, env.msg_id);
+            broadcast(state.peers, env, -1);
+            state
+        },
+    }
+}
+
+fn bytes_to_text(b: bytes) -> string {
+    match (from_utf8(b)) {
+        Result.Ok(t) => t,
+        Result.Err(_) => "<binary>",
+    }
+}
+
+fn handle_envelope(st: State, from_id: int, env: protocol.Envelope, hub: Channel<Msg>) -> State {
+    var state = st;
+    if (gossip.check_and_insert(state.seen, env.msg_id)) {
+        return state;
+    }
+
+    if (env.kind == protocol.KIND_PRESENCE) {
+        match (protocol.decode_presence_body(env.body)) {
+            Result.Ok(pair) => {
+                let (nick, _) = pair;
+                let ed = pub_hex(env.origin_pub);
+                state.nicks.insert(ed, nick);
+                state.ed_by_nick.insert(nick.to_lower(), ed);
+            },
+            Result.Err(_) => { },
+        }
+    } else if (env.kind == protocol.KIND_CHAT) {
+        match (protocol.decode_chat_body(env.body)) {
+            Result.Err(_) => { },
+            Result.Ok(trip) => {
+                let (chan, flags, payload) = trip;
+                if (!state.chans.contains_key(chan)) {
+                    ui.info("(ignored chat on " + chan + " — /join " + chan + " to see it)");
+                } else {
+                    match (state.chans.get(chan)) {
+                        Option.None => { },
+                        Option.Some(ch) => {
+                            var shown = "<undecipherable>";
+                            if ((flags & protocol.FLAG_ENCRYPTED) != 0) {
+                                match (ch.key) {
+                                    Option.None => { shown = "<encrypted>"; },
+                                    Option.Some(key) => {
+                                        match (crypto_chan.open(
+                                            key,
+                                            env.seq,
+                                            chan,
+                                            env.origin_pub,
+                                            payload
+                                        )) {
+                                            Result.Ok(pt) => { shown = bytes_to_text(pt); },
+                                            Result.Err(_) => { shown = "<undecipherable>"; },
+                                        }
+                                    },
+                                }
+                            } else {
+                                shown = bytes_to_text(payload);
+                            }
+                            let nick = match (state.nicks.get(pub_hex(env.origin_pub))) {
+                                Option.Some(n) => n,
+                                Option.None => identity.fingerprint(env.origin_pub),
+                            };
+                            if (env.origin_pub != state.id.pubkey) {
+                                ui.chat_line(chan, nick, shown);
+                            }
+                        },
+                    }
+                }
+            },
+        }
+    } else if (env.kind == protocol.KIND_DM) {
+        match (protocol.decode_dm_body(env.body)) {
+            Result.Err(_) => { },
+            Result.Ok(pair) => {
+                let (dest_ed, sealed) = pair;
+                if (dest_ed == state.id.pubkey) {
+                    let aad = crypto_dm.aad_for(dest_ed, env.origin_pub, env.seq);
+                    match (crypto_dm.open(state.id.x_secret, state.id.x_pubkey, aad, sealed)) {
+                        Result.Err(_) => {
+                            ui.info("(dm undecipherable)");
+                        },
+                        Result.Ok(pt) => {
+                            let text = bytes_to_text(pt);
+                            let nick = match (state.nicks.get(pub_hex(env.origin_pub))) {
+                                Option.Some(n) => n,
+                                Option.None => identity.fingerprint(env.origin_pub),
+                            };
+                            ui.dm_line(nick, text);
+                        },
+                    }
+                }
+            },
+        }
+    } else if (env.kind == protocol.KIND_PEER_EXCHANGE) {
+        match (protocol.decode_peer_exchange(env.body)) {
+            Result.Ok(hints) => {
+                state = queue_discovered(state, hub, hints);
+            },
+            Result.Err(_) => { },
+        }
+    } else if (env.kind == protocol.KIND_PING) {
+        let seq = bump_seq(state);
+        match (protocol.make_envelope(state.id, protocol.KIND_PONG, 0, seq, env.body)) {
+            Result.Ok(pong) => {
+                send_to(state.peers, from_id, pong);
+            },
+            Result.Err(_) => { },
+        }
+    }
+
+    if (env.hops > 0) {
+        broadcast(state.peers, protocol.with_hops(env, env.hops - 1), from_id);
+    }
+    state
+}
+
+fn do_dm(st: State, nick: string, text: string) -> State {
+    var state = st;
+    if (text.len() == 0) {
+        ui.info("usage: /msg NICK text");
+        return state;
+    }
+    let key = nick.to_lower();
+    match (state.ed_by_nick.get(key)) {
+        Option.None => {
+            ui.info("unknown nick: " + nick + " (see /peers /who)");
+            state
+        },
+        Option.Some(ed_hex) => match (state.x_by_ed.get(ed_hex)) {
+            Option.None => {
+                ui.info("no x25519 key for " + nick);
+                state
+            },
+            Option.Some(x_pk) => {
+                match (hex.hex_decode(ed_hex)) {
+                    Result.Err(e) => {
+                        ui.info(e);
+                        state
+                    },
+                    Result.Ok(dest_ed) => {
+                        let seq = bump_seq(state);
+                        let aad = crypto_dm.aad_for(dest_ed, state.id.pubkey, seq);
+                        match (crypto_dm.seal(x_pk, aad, text.to_bytes())) {
+                            Result.Err(e) => {
+                                ui.info(e);
+                                state
+                            },
+                            Result.Ok(sealed) => {
+                                let body = protocol.encode_dm_body(dest_ed, sealed);
+                                match (protocol.make_envelope(
+                                    state.id,
+                                    protocol.KIND_DM,
+                                    protocol.DEFAULT_HOPS,
+                                    seq,
+                                    body
+                                )) {
+                                    Result.Err(e) => {
+                                        ui.info("dm publish failed: " + e);
+                                        state
+                                    },
+                                    Result.Ok(env) => {
+                                        let _ = gossip.check_and_insert(state.seen, env.msg_id);
+                                        broadcast(state.peers, env, -1);
+                                        ui.dm_line("you → " + nick, text);
+                                        state
+                                    },
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+        },
+    }
+}
+
+fn do_chat(st: State, text: string) -> State {
+    var state = st;
+    if (text.len() == 0) {
+        return state;
+    }
+    if (state.active.len() == 0) {
+        ui.info("join a channel first (/join #chan)");
+        return state;
+    }
+    if (state.peers.len() == 0) {
+        ui.info("no peers connected — message stays local (/peers)");
+    }
+    match (state.chans.get(state.active)) {
+        Option.None => {
+            ui.info("not in " + state.active);
+            state
+        },
+        Option.Some(ch) => {
+            let seq = bump_seq(state);
+            var flags = 0;
+            var payload = text.to_bytes();
+            match (ch.key) {
+                Option.None => { },
+                Option.Some(key) => {
+                    match (crypto_chan.seal(key, seq, ch.name, state.id.pubkey, text.to_bytes())) {
+                        Result.Err(e) => {
+                            ui.info(e);
+                            return state;
+                        },
+                        Result.Ok(ct) => {
+                            flags = protocol.FLAG_ENCRYPTED;
+                            payload = ct;
+                        },
+                    }
+                },
+            }
+            let body = protocol.encode_chat_body(ch.name, flags, payload);
+            match (protocol.make_envelope(
+                state.id,
+                protocol.KIND_CHAT,
+                protocol.DEFAULT_HOPS,
+                seq,
+                body
+            )) {
+                Result.Err(e) => {
+                    ui.info("publish failed: " + e);
+                    state
+                },
+                Result.Ok(env) => {
+                    let _ = gossip.check_and_insert(state.seen, env.msg_id);
+                    broadcast(state.peers, env, -1);
+                    ui.chat_line(ch.name, state.id.nick, text);
+                    state
+                },
+            }
+        },
+    }
+}
+
+fn announce_presence(st: State) -> State {
+    let body = protocol.encode_presence_body(st.id.nick, 0);
+    publish(st, protocol.KIND_PRESENCE, body)
+}
+
+fn remove_peer(peers: [Peer], id: int) -> [Peer] {
+    var out: [Peer] = [];
+    for p in peers {
+        if (p.id != id) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+fn on_link_up(st: State, peer: Peer) -> State {
+    var state = st;
+    let ed = pub_hex(peer.pubkey);
+    state.nicks.insert(ed, peer.nick);
+    state.ed_by_nick.insert(peer.nick.to_lower(), ed);
+    state.x_by_ed.insert(ed, peer.x_pubkey);
+    state.linked.insert(ed, 1);
+    if (!peer.addr.starts_with("inbound:")) {
+        state.trying.insert(peer.addr, 1);
+        store.remember_peer(state.config_dir, peer.addr);
+    }
+    let pid = peer.id;
+    state.peers.push(peer);
+    ui.info("peer up: " + peer.nick + " (" + peer.addr + ")");
+    state = announce_presence(state);
+    send_peer_exchange(state, pid)
+}
+
+fn handle_line(st: State, line: string) -> (State, bool) {
+    var state = st;
+    match (commands.parse(line, state.active)) {
+        commands.Action.Quit => (state, true),
+        commands.Action.Help => {
+            ui.info(commands.help_text());
+            return (state, false);
+        },
+        commands.Action.Unknown(m) => {
+            ui.info(m);
+            return (state, false);
+        },
+        commands.Action.Nick(n) => {
+            match (identity.set_nick(state.id, state.config_dir, n)) {
+                Result.Err(e) => {
+                    ui.info(e);
+                    return (state, false);
+                },
+                Result.Ok(id2) => {
+                    state.id = id2;
+                    ui.info("nick: " + id2.nick);
+                    return (announce_presence(state), false);
+                },
+            }
+        },
+        commands.Action.Join(name, invite) => {
+            match (channels.enter(name, invite)) {
+                Result.Err(e) => {
+                    ui.info(e);
+                    return (state, false);
+                },
+                Result.Ok(ch) => {
+                    let label = match (ch.key) {
+                        Option.Some(_) => "joined " + ch.name + " (encrypted)",
+                        Option.None => "joined " + ch.name + " (public)",
+                    };
+                    state.chans.insert(ch.name, ch);
+                    state.active = ch.name;
+                    ui.info(label);
+                    return (state, false);
+                },
+            }
+        },
+        commands.Action.Part(name) => {
+            let n = channels.normalize_name(name);
+            if (n.len() == 0) {
+                ui.info("usage: /part #chan");
+                return (state, false);
+            }
+            state.chans.remove(n);
+            if (state.active == n) {
+                state.active = "";
+            }
+            ui.info("left " + n);
+            return (state, false);
+        },
+        commands.Action.Peers => {
+            if (state.peers.len() == 0) {
+                ui.info("(no peers)");
+            } else {
+                for p in state.peers {
+                    ui.info(p.addr + "  " + p.nick + "  " + identity.fingerprint(p.pubkey));
+                }
+            }
+            return (state, false);
+        },
+        commands.Action.Who(_) => {
+            var lines: [string] = [];
+            lines.push(state.id.nick + " (you)");
+            for p in state.peers {
+                lines.push(p.nick);
+            }
+            for k in state.nicks.keys() {
+                match (state.nicks.get(k)) {
+                    Option.Some(n) => {
+                        if (n != state.id.nick) {
+                            var known = false;
+                            for p in state.peers {
+                                if (p.nick == n) { known = true; }
+                            }
+                            if (!known) { lines.push(n); }
+                        }
+                    },
+                    Option.None => { },
+                }
+            }
+            ui.info(join(lines, ", "));
+            return (state, false);
+        },
+        commands.Action.Invite(name) => {
+            let n = channels.normalize_name(name);
+            let inv = commands.fresh_invite();
+            match (channels.enter(n, inv)) {
+                Result.Err(e) => {
+                    ui.info(e);
+                    return (state, false);
+                },
+                Result.Ok(ch) => {
+                    state.chans.insert(ch.name, ch);
+                    state.active = ch.name;
+                    ui.info("channel " + ch.name + " invite: " + inv);
+                    ui.info("peers need: /join " + ch.name + " " + inv);
+                    return (state, false);
+                },
+            }
+        },
+        commands.Action.Dm(nick, text) => (do_dm(state, nick, text), false),
+        commands.Action.Chat(text) => (do_chat(state, text), false),
+    }
+}
+
+fn already_linked_addr(st: State, addr: string) -> bool {
+    for p in st.peers {
+        if (p.addr == addr) {
+            return true;
+        }
+    }
+    false
+}
+
+fn hub_loop(
+    st0: State,
+    hub: Channel<Msg>,
+    id: identity.Identity,
+    bind_port: int,
+    id_ch: Channel<int>,
+    ticket: Channel<int>
+) {
+    var state = st0;
+    var done = false;
+    while (!done) {
+        match (recv(hub)) {
+            Option.None => { done = true; },
+            Option.Some(msg) => {
+                match (msg) {
+                    Msg.Quit => { done = true; },
+                    Msg.Line(line) => {
+                        let pair = handle_line(state, line);
+                        let (st2, quit) = pair;
+                        state = st2;
+                        done = quit;
+                        if (!done) {
+                            ui.prompt();
+                        }
+                    },
+                    Msg.LinkUp(peer) => {
+                        state = on_link_up(state, peer);
+                        ui.prompt();
+                    },
+                    Msg.LinkDown(pid) => {
+                        var nick = "?";
+                        var pk = "";
+                        var addr = "";
+                        for p in state.peers {
+                            if (p.id == pid) {
+                                nick = p.nick;
+                                pk = pub_hex(p.pubkey);
+                                addr = p.addr;
+                            }
+                        }
+                        state.peers = remove_peer(state.peers, pid);
+                        if (pk.len() > 0) {
+                            state.linked.remove(pk);
+                        }
+                        if (addr.len() > 0 && !addr.starts_with("inbound:")) {
+                            state.trying.remove(addr);
+                        }
+                        ui.info("peer down: " + nick);
+                        ui.prompt();
+                    },
+                    Msg.InEnv(from_id, env) => {
+                        state = handle_envelope(state, from_id, env, hub);
+                    },
+                    Msg.TryDial(addr) => {
+                        if (!already_linked_addr(state, addr)) {
+                            let pid = alloc_id(id_ch, ticket);
+                            spawn(fn() {
+                                dial_one(hub, id, bind_port, addr, pid);
+                            });
+                        }
+                    },
+                }
+            },
+        }
+    }
+}
+
+fn ui_loop(hub: Channel<Msg>) {
+    var r = ui.reader();
+    ui.prompt();
+    while (true) {
+        match (ui.read_line(r)) {
+            Option.None => {
+                send(hub, Msg.Quit);
+                return;
+            },
+            Option.Some(line) => {
+                send(hub, Msg.Line(line));
+                if (line.trim() == "/quit" || line.trim() == "/exit" || line.trim() == "/q") {
+                    return;
+                }
+            },
+        }
+    }
+}
+
+/// Runs the mesh until `/quit` (exit code 0) or listen failure.
+pub fn run(opts: Opts) -> int {
+    let nicks0: Map<string, string> = Map.new();
+    let ed_by_nick0: Map<string, string> = Map.new();
+    let x_by_ed0: Map<string, bytes> = Map.new();
+    let chans0: Map<string, channels.Chan> = Map.new();
+    let trying0: Map<string, int> = Map.new();
+    let linked0: Map<string, int> = Map.new();
+    for a in opts.peers {
+        trying0.insert(a, 1);
+    }
+    let st0 = State {
+        id: opts.id,
+        config_dir: opts.config_dir,
+        bind_port: opts.bind_port,
+        advertise: opts.advertise,
+        peers: [],
+        nicks: nicks0,
+        ed_by_nick: ed_by_nick0,
+        x_by_ed: x_by_ed0,
+        chans: chans0,
+        active: "",
+        seq: 0,
+        seen: gossip.new(),
+        trying: trying0,
+        linked: linked0,
+    };
+
+    ui.info(
+        "msg 0.1 — peer " + identity.fingerprint(opts.id.pubkey) + "  nick: " + opts.id.nick
+    );
+    if (opts.advertise.len() > 0) {
+        ui.info("advertise " + opts.advertise + ":" + to_string(opts.bind_port));
+    }
+
+    let hub: Channel<Msg> = Channel.new();
+    let id_ch: Channel<int> = Channel.new();
+    let ticket: Channel<int> = Channel.new();
+
+    spawn(fn() { id_allocator(id_ch, ticket); });
+    spawn(fn() {
+        accept_loop(hub, opts.id, opts.bind_host, opts.bind_port, id_ch, ticket);
+    });
+
+    for addr in opts.peers {
+        store.remember_peer(opts.config_dir, addr);
+        let pid = alloc_id(id_ch, ticket);
+        dial_one(hub, opts.id, opts.bind_port, addr, pid);
+    }
+
+    spawn(fn() { ui_loop(hub); });
+    hub_loop(st0, hub, opts.id, opts.bind_port, id_ch, ticket);
+    0
+}
+

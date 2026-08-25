@@ -2,7 +2,7 @@
 
 Chat **peer-to-peer** inspirado en IRC, sin servidor central. Cada proceso es un nodo de una malla TCP: canales `#…`, nicks, gossip firmado (Ed25519), cifrado opcional de canal (invite → ChaCha20-Poly1305) y DMs sealed-box (X25519).
 
-Escrito en [raylang](https://github.com/roberto-ayala/raylang). Versión **0.1** — MVP de malla listo (fases 0–8 en [`docs/PLAN.md`](docs/PLAN.md)). Wire: [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
+Escrito en [raylang](https://github.com/ray-language/raylang). Versión **0.1** — MVP de malla listo (fases 0–8 en [`docs/PLAN.md`](docs/PLAN.md)). Wire: [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
 ## Estado actual
 

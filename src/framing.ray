@@ -40,16 +40,18 @@ pub fn read_be32(b: bytes) -> int {
 }
 
 pub fn be64(n: int) -> bytes {
-    bytes_of([
-        (n >> 56) & 255,
-        (n >> 48) & 255,
-        (n >> 40) & 255,
-        (n >> 32) & 255,
-        (n >> 24) & 255,
-        (n >> 16) & 255,
-        (n >> 8) & 255,
-        n & 255
-    ])
+    bytes_of(
+        [
+            (n >> 56) & 255,
+            (n >> 48) & 255,
+            (n >> 40) & 255,
+            (n >> 32) & 255,
+            (n >> 24) & 255,
+            (n >> 16) & 255,
+            (n >> 8) & 255,
+            n & 255
+        ]
+    )
 }
 
 pub fn read_be64(b: bytes) -> int {
@@ -75,7 +77,9 @@ pub fn read_exact(c: Conn, n: int) -> Result<(Conn, bytes), string> {
                     conn = Conn { handle: conn.handle, buf: conn.buf + chunk };
                 }
             },
-            Result.Err(e) => { err = e; },
+            Result.Err(e) => {
+                err = e;
+            },
         }
     }
     if (err.len() > 0) {

@@ -123,7 +123,9 @@ fn writer_loop(c0: framing.Conn, out: Channel<protocol.Envelope>) {
                         framing.close_conn(c);
                         return;
                     },
-                    Result.Ok(c2) => { c = c2; },
+                    Result.Ok(c2) => {
+                        c = c2;
+                    },
                 }
             },
         }
@@ -172,26 +174,36 @@ fn spawn_link(
             let (c2, remote) = pair;
             if (remote.pubkey == id.pubkey) {
                 ui.info(
-                    "handshake rejected (" + addr
+                    "handshake rejected ("
+                        + addr
                         + "): same identity as this node — use a different --config or MSG_HOME per peer"
                 );
                 framing.close_conn(c2);
                 return;
             }
             let out: Channel<protocol.Envelope> = Channel.new();
-            send(hub, Msg.LinkUp(Peer {
-                id: peer_id,
-                nick: remote.nick,
-                pubkey: remote.pubkey,
-                x_pubkey: remote.x_pubkey,
-                addr: addr,
-                listen_port: remote.listen_port,
-                out: out,
-            }));
+            send(
+                hub,
+                Msg.LinkUp(
+                    Peer {
+                        id: peer_id,
+                        nick: remote.nick,
+                        pubkey: remote.pubkey,
+                        x_pubkey: remote.x_pubkey,
+                        addr: addr,
+                        listen_port: remote.listen_port,
+                        out: out
+                    }
+                )
+            );
             // Separate Conn buffers: reader and writer only share the socket handle.
             let wh = c2.handle;
-            spawn(fn() { writer_loop(framing.from_handle(wh), out); });
-            spawn(fn() { reader_loop(c2, peer_id, hub); });
+            spawn(fn() {
+                writer_loop(framing.from_handle(wh), out);
+            });
+            spawn(fn() {
+                reader_loop(c2, peer_id, hub);
+            });
         },
     }
 }
@@ -200,7 +212,9 @@ fn id_allocator(id_ch: Channel<int>, ticket: Channel<int>) {
     var n = 1;
     while (true) {
         match (recv(ticket)) {
-            Option.None => { return; },
+            Option.None => {
+                return;
+            },
             Option.Some(_) => {
                 send(id_ch, n);
                 n = n + 1;
@@ -258,7 +272,6 @@ fn accept_loop(
     }
 }
 
-
 fn dial_one(
     hub: Channel<Msg>,
     id: identity.Identity,
@@ -305,11 +318,9 @@ fn bump_seq(st: State) -> int {
 fn dialable_hints(st: State) -> [protocol.PeerHint] {
     var hints: [protocol.PeerHint] = [];
     if (st.advertise.len() > 0) {
-        hints.push(protocol.PeerHint {
-            host: st.advertise,
-            port: st.bind_port,
-            pubkey: st.id.pubkey,
-        });
+        hints.push(
+            protocol.PeerHint { host: st.advertise, port: st.bind_port, pubkey: st.id.pubkey }
+        );
     }
     for p in st.peers {
         if (!p.addr.starts_with("inbound:")) {
@@ -317,11 +328,7 @@ fn dialable_hints(st: State) -> [protocol.PeerHint] {
                 Result.Err(_) => { },
                 Result.Ok(hp) => {
                     let (host, port) = hp;
-                    hints.push(protocol.PeerHint {
-                        host: host,
-                        port: port,
-                        pubkey: p.pubkey,
-                    });
+                    hints.push(protocol.PeerHint { host: host, port: port, pubkey: p.pubkey });
                 },
             }
         }
@@ -423,7 +430,9 @@ fn handle_envelope(st: State, from_id: int, env: protocol.Envelope, hub: Channel
                             var shown = "<undecipherable>";
                             if ((flags & protocol.FLAG_ENCRYPTED) != 0) {
                                 match (ch.key) {
-                                    Option.None => { shown = "<encrypted>"; },
+                                    Option.None => {
+                                        shown = "<encrypted>";
+                                    },
                                     Option.Some(key) => {
                                         match (crypto_chan.open(
                                             key,
@@ -432,8 +441,12 @@ fn handle_envelope(st: State, from_id: int, env: protocol.Envelope, hub: Channel
                                             env.origin_pub,
                                             payload
                                         )) {
-                                            Result.Ok(pt) => { shown = bytes_to_text(pt); },
-                                            Result.Err(_) => { shown = "<undecipherable>"; },
+                                            Result.Ok(pt) => {
+                                                shown = bytes_to_text(pt);
+                                            },
+                                            Result.Err(_) => {
+                                                shown = "<undecipherable>";
+                                            },
                                         }
                                     },
                                 }
@@ -728,9 +741,13 @@ fn handle_line(st: State, line: string) -> (State, bool) {
                         if (n != state.id.nick) {
                             var known = false;
                             for p in state.peers {
-                                if (p.nick == n) { known = true; }
+                                if (p.nick == n) {
+                                    known = true;
+                                }
                             }
-                            if (!known) { lines.push(n); }
+                            if (!known) {
+                                lines.push(n);
+                            }
                         }
                     },
                     Option.None => { },
@@ -782,10 +799,14 @@ fn hub_loop(
     var done = false;
     while (!done) {
         match (recv(hub)) {
-            Option.None => { done = true; },
+            Option.None => {
+                done = true;
+            },
             Option.Some(msg) => {
                 match (msg) {
-                    Msg.Quit => { done = true; },
+                    Msg.Quit => {
+                        done = true;
+                    },
                     Msg.Line(line) => {
                         let pair = handle_line(state, line);
                         let (st2, quit) = pair;
@@ -881,12 +902,10 @@ pub fn run(opts: Opts) -> int {
         seq: 0,
         seen: gossip.new(),
         trying: trying0,
-        linked: linked0,
+        linked: linked0
     };
 
-    ui.info(
-        "msg 0.1 — peer " + identity.fingerprint(opts.id.pubkey) + "  nick: " + opts.id.nick
-    );
+    ui.info("msg 0.1 — peer " + identity.fingerprint(opts.id.pubkey) + "  nick: " + opts.id.nick);
     if (opts.advertise.len() > 0) {
         ui.info("advertise " + opts.advertise + ":" + to_string(opts.bind_port));
     }
@@ -895,7 +914,9 @@ pub fn run(opts: Opts) -> int {
     let id_ch: Channel<int> = Channel.new();
     let ticket: Channel<int> = Channel.new();
 
-    spawn(fn() { id_allocator(id_ch, ticket); });
+    spawn(fn() {
+        id_allocator(id_ch, ticket);
+    });
     spawn(fn() {
         accept_loop(hub, opts.id, opts.bind_host, opts.bind_port, id_ch, ticket);
     });
@@ -906,8 +927,9 @@ pub fn run(opts: Opts) -> int {
         dial_one(hub, opts.id, opts.bind_port, addr, pid);
     }
 
-    spawn(fn() { ui_loop(hub); });
+    spawn(fn() {
+        ui_loop(hub);
+    });
     hub_loop(st0, hub, opts.id, opts.bind_port, id_ch, ticket);
     0
 }
-

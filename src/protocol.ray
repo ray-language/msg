@@ -5,18 +5,29 @@ import framing;
 import identity;
 
 pub const VERSION: int = 2;
+
 pub const MAGIC: bytes = b"MSG1";
+
 pub const DEFAULT_PORT: int = 7700;
+
 pub const DEFAULT_HOPS: int = 8;
+
 pub const NONCE_LEN: int = 16;
+
 pub const MSG_ID_LEN: int = 32;
 
 pub const KIND_PRESENCE: int = 1;
+
 pub const KIND_CHAT: int = 2;
+
 pub const KIND_PART: int = 3;
+
 pub const KIND_PEER_EXCHANGE: int = 4;
+
 pub const KIND_PING: int = 5;
+
 pub const KIND_PONG: int = 6;
+
 pub const KIND_DM: int = 7;
 
 pub const FLAG_ENCRYPTED: int = 1;
@@ -51,8 +62,14 @@ fn hello_preimage(
     nonce: bytes
 ) -> bytes {
     let nick_b = nick.to_bytes();
-    MAGIC + bytes_of([VERSION]) + pubkey + framing.be16(listen_port) + framing.be16(nick_b.len())
-        + nick_b + x_pubkey + nonce
+    MAGIC
+        + bytes_of([VERSION])
+        + pubkey
+        + framing.be16(listen_port)
+        + framing.be16(nick_b.len())
+        + nick_b
+        + x_pubkey
+        + nonce
 }
 
 /// Builds and signs a Hello from local identity.
@@ -61,14 +78,16 @@ pub fn make_hello(id: identity.Identity, listen_port: int) -> Result<Hello, stri
     let pre = hello_preimage(id.pubkey, id.x_pubkey, listen_port, id.nick, nonce);
     match (identity.sign(id, pre)) {
         Result.Err(e) => Result.Err(e),
-        Result.Ok(sig) => Result.Ok(Hello {
-            pubkey: id.pubkey,
-            x_pubkey: id.x_pubkey,
-            listen_port: listen_port,
-            nick: id.nick,
-            nonce: nonce,
-            sig: sig,
-        }),
+        Result.Ok(sig) => Result.Ok(
+            Hello {
+                pubkey: id.pubkey,
+                x_pubkey: id.x_pubkey,
+                listen_port: listen_port,
+                nick: id.nick,
+                nonce: nonce,
+                sig: sig
+            }
+        ),
     }
 }
 
@@ -92,7 +111,8 @@ pub fn decode_hello(payload: bytes) -> Result<Hello, string> {
     let listen_port = framing.read_be16(payload.sub_bytes(37, 39));
     let nick_len = framing.read_be16(payload.sub_bytes(39, 41));
     var off = 41;
-    if (nick_len < 0 || nick_len > 32
+    if (nick_len < 0
+        || nick_len > 32
         || off + nick_len + 32 + NONCE_LEN + identity.SIG_LEN > payload.len()) {
         return Result.Err("invalid nick in hello");
     }
@@ -110,14 +130,16 @@ pub fn decode_hello(payload: bytes) -> Result<Hello, string> {
             if (!identity.verify(pubkey, pre, sig)) {
                 Result.Err("hello signature invalid")
             } else {
-                Result.Ok(Hello {
-                    pubkey: pubkey,
-                    x_pubkey: x_pubkey,
-                    listen_port: listen_port,
-                    nick: nick,
-                    nonce: nonce,
-                    sig: sig,
-                })
+                Result.Ok(
+                    Hello {
+                        pubkey: pubkey,
+                        x_pubkey: x_pubkey,
+                        listen_port: listen_port,
+                        nick: nick,
+                        nonce: nonce,
+                        sig: sig
+                    }
+                )
             }
         },
     }
@@ -168,22 +190,30 @@ pub fn make_envelope(
     let pre = envelope_preimage(kind, msg_id, id.pubkey, seq, ts_ms, body);
     match (identity.sign(id, pre)) {
         Result.Err(e) => Result.Err(e),
-        Result.Ok(sig) => Result.Ok(Envelope {
-            kind: kind,
-            hops: hops,
-            msg_id: msg_id,
-            origin_pub: id.pubkey,
-            seq: seq,
-            ts_ms: ts_ms,
-            body: body,
-            sig: sig,
-        }),
+        Result.Ok(sig) => Result.Ok(
+            Envelope {
+                kind: kind,
+                hops: hops,
+                msg_id: msg_id,
+                origin_pub: id.pubkey,
+                seq: seq,
+                ts_ms: ts_ms,
+                body: body,
+                sig: sig
+            }
+        ),
     }
 }
 
 pub fn encode_envelope(e: Envelope) -> bytes {
-    bytes_of([e.kind & 255, e.hops & 255]) + e.msg_id + e.origin_pub + framing.be64(e.seq)
-        + framing.be64(e.ts_ms) + framing.be32(e.body.len()) + e.body + e.sig
+    bytes_of([e.kind & 255, e.hops & 255])
+        + e.msg_id
+        + e.origin_pub
+        + framing.be64(e.seq)
+        + framing.be64(e.ts_ms)
+        + framing.be32(e.body.len())
+        + e.body
+        + e.sig
 }
 
 pub fn decode_envelope(payload: bytes) -> Result<Envelope, string> {
@@ -212,16 +242,18 @@ pub fn decode_envelope(payload: bytes) -> Result<Envelope, string> {
     if (!identity.verify(origin_pub, pre, sig)) {
         return Result.Err("envelope signature invalid");
     }
-    Result.Ok(Envelope {
-        kind: kind,
-        hops: hops,
-        msg_id: msg_id,
-        origin_pub: origin_pub,
-        seq: seq,
-        ts_ms: ts_ms,
-        body: body,
-        sig: sig,
-    })
+    Result.Ok(
+        Envelope {
+            kind: kind,
+            hops: hops,
+            msg_id: msg_id,
+            origin_pub: origin_pub,
+            seq: seq,
+            ts_ms: ts_ms,
+            body: body,
+            sig: sig
+        }
+    )
 }
 
 /// Returns a copy with hops decremented (for gossip forward).
@@ -234,7 +266,7 @@ pub fn with_hops(e: Envelope, hops: int) -> Envelope {
         seq: e.seq,
         ts_ms: e.ts_ms,
         body: e.body,
-        sig: e.sig,
+        sig: e.sig
     }
 }
 
@@ -351,7 +383,9 @@ pub fn decode_peer_exchange(body: bytes) -> Result<[PeerHint], string> {
         let pubkey = body.sub_bytes(off, off + 32);
         off = off + 32;
         match (from_utf8(host_b)) {
-            Result.Err(_) => { return Result.Err("peer host not utf-8"); },
+            Result.Err(_) => {
+                return Result.Err("peer host not utf-8");
+            },
             Result.Ok(host) => {
                 hints.push(PeerHint { host: host, port: port, pubkey: pubkey });
             },

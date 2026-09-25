@@ -7,10 +7,16 @@ import protocol;
 fn main() -> int {
     let dir = "/tmp/msg-smoke-id";
     match (identity.load(dir, "smoke")) {
-        Result.Err(e) => { eprint(e); return 1; },
+        Result.Err(e) => {
+            eprint(e);
+            return 1;
+        },
         Result.Ok(id) => {
             match (net.tcp_listen("127.0.0.1", 0)) {
-                Result.Err(e) => { eprint(e); return 1; },
+                Result.Err(e) => {
+                    eprint(e);
+                    return 1;
+                },
                 Result.Ok(listener) => {
                     let port = net.local_port(listener);
                     print("port " + to_string(port));
@@ -38,23 +44,41 @@ fn main() -> int {
                         }
                     });
                     match (net.tcp_connect("127.0.0.1", port)) {
-                        Result.Err(e) => { eprint("connect " + e); return 1; },
+                        Result.Err(e) => {
+                            eprint("connect " + e);
+                            return 1;
+                        },
                         Result.Ok(h) => {
                             var c = framing.from_handle(h);
                             match (protocol.recv_hello(c)) {
-                                Result.Err(e) => { eprint("dial recv " + e); return 1; },
+                                Result.Err(e) => {
+                                    eprint("dial recv " + e);
+                                    return 1;
+                                },
                                 Result.Ok(pair) => {
                                     let (c1, remote) = pair;
                                     print("remote nick " + remote.nick);
                                     match (protocol.make_hello(id, port)) {
-                                        Result.Err(e) => { eprint(e); return 1; },
+                                        Result.Err(e) => {
+                                            eprint(e);
+                                            return 1;
+                                        },
                                         Result.Ok(hello) => {
                                             match (protocol.send_hello(c1, hello)) {
-                                                Result.Err(e) => { eprint(e); return 1; },
+                                                Result.Err(e) => {
+                                                    eprint(e);
+                                                    return 1;
+                                                },
                                                 Result.Ok(_) => {
                                                     match (recv(done)) {
-                                                        Option.Some(s) => { print(s); 0 },
-                                                        Option.None => { eprint("no done"); 1 },
+                                                        Option.Some(s) => {
+                                                            print(s);
+                                                            0
+                                                        },
+                                                        Option.None => {
+                                                            eprint("no done");
+                                                            1
+                                                        },
                                                     }
                                                 },
                                             }

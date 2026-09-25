@@ -8,7 +8,11 @@ fn empty_bytes() -> bytes {
     bytes_of(none)
 }
 
-fn derive_key_nonce(dh: bytes, eph_pk: bytes, recipient_x_pk: bytes) -> Result<(bytes, bytes), string> {
+fn derive_key_nonce(
+    dh: bytes,
+    eph_pk: bytes,
+    recipient_x_pk: bytes
+) -> Result<(bytes, bytes), string> {
     let salt = eph_pk + recipient_x_pk;
     match (crypto.hkdf_sha256(salt, dh, INFO, 44)) {
         Option.None => Result.Err("hkdf failed"),
@@ -38,7 +42,12 @@ pub fn seal(recipient_x_pk: bytes, aad: bytes, plaintext: bytes) -> Result<bytes
 }
 
 /// Opens a sealed DM payload with our long-term X25519 secret.
-pub fn open(my_x_secret: bytes, recipient_x_pk: bytes, aad: bytes, sealed: bytes) -> Result<bytes, string> {
+pub fn open(
+    my_x_secret: bytes,
+    recipient_x_pk: bytes,
+    aad: bytes,
+    sealed: bytes
+) -> Result<bytes, string> {
     if (sealed.len() < 32 + 16) {
         return Result.Err("dm payload too short");
     }
@@ -61,16 +70,18 @@ pub fn open(my_x_secret: bytes, recipient_x_pk: bytes, aad: bytes, sealed: bytes
 
 /// AAD for a DM: destination Ed25519 ‖ origin Ed25519 ‖ seq_be64.
 pub fn aad_for(dest_ed: bytes, origin_ed: bytes, seq: int) -> bytes {
-    dest_ed + origin_ed + bytes_of([
-        (seq >> 56) & 255,
-        (seq >> 48) & 255,
-        (seq >> 40) & 255,
-        (seq >> 32) & 255,
-        (seq >> 24) & 255,
-        (seq >> 16) & 255,
-        (seq >> 8) & 255,
-        seq & 255
-    ])
+    dest_ed + origin_ed + bytes_of(
+        [
+            (seq >> 56) & 255,
+            (seq >> 48) & 255,
+            (seq >> 40) & 255,
+            (seq >> 32) & 255,
+            (seq >> 24) & 255,
+            (seq >> 16) & 255,
+            (seq >> 8) & 255,
+            seq & 255
+        ]
+    )
 }
 
 @test

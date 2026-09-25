@@ -40,7 +40,9 @@ pub fn read_line(r: Reader) -> Option<string> {
             Option.Some(chunk) => {
                 match (from_utf8(chunk)) {
                     Result.Err(_) => { },
-                    Result.Ok(s) => { r.buf = r.buf + s; },
+                    Result.Ok(s) => {
+                        r.buf = r.buf + s;
+                    },
                 }
             },
         }
@@ -50,7 +52,9 @@ pub fn read_line(r: Reader) -> Option<string> {
 
 pub fn prompt() {
     match (io.write("> ")) {
-        Result.Ok(_) => { let _ = io.flush(); },
+        Result.Ok(_) => {
+            let _ = io.flush();
+        },
         Result.Err(_) => { },
     }
 }

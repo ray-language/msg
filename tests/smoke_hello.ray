@@ -1,95 +1,106 @@
-// Smoke: listener + dialer Hello in one process.
+// Smoke: listener + dialer Hello in one process, plus identity persistence.
 import std/net;
+import std/fs;
 import framing;
 import identity;
 import protocol;
 
-fn main() -> int {
-    let dir = "/tmp/msg-smoke-id";
-    match (identity.load(dir, "smoke")) {
-        Result.Err(e) => {
-            eprint(e);
-            return 1;
-        },
-        Result.Ok(id) => {
-            match (net.tcp_listen("127.0.0.1", 0)) {
-                Result.Err(e) => {
-                    eprint(e);
-                    return 1;
-                },
-                Result.Ok(listener) => {
-                    let port = net.local_port(listener);
-                    print("port " + to_string(port));
-                    let done: Channel<string> = Channel.new();
-                    spawn(fn() {
-                        match (net.tcp_accept(listener)) {
-                            Result.Err(e) => send(done, "accept err " + e),
-                            Result.Ok(h) => {
-                                var c = framing.from_handle(h);
-                                match (protocol.make_hello(id, port)) {
-                                    Result.Err(e) => send(done, "hello " + e),
-                                    Result.Ok(hello) => {
-                                        match (protocol.send_hello(c, hello)) {
-                                            Result.Err(e) => send(done, "send " + e),
-                                            Result.Ok(c1) => {
-                                                match (protocol.recv_hello(c1)) {
-                                                    Result.Err(e) => send(done, "recv " + e),
-                                                    Result.Ok(_) => send(done, "listener ok"),
-                                                }
-                                            },
-                                        }
-                                    },
-                                }
-                            },
-                        }
-                    });
-                    match (net.tcp_connect("127.0.0.1", port)) {
-                        Result.Err(e) => {
-                            eprint("connect " + e);
-                            return 1;
+fn temp_config() -> string {
+    match (fs.make_temp_dir("msg_smoke_")) {
+        Result.Ok(d) => d,
+        Result.Err(e) => panic(e),
+    }
+}
+
+fn load_identity(dir: string, nick: string) -> identity.Identity {
+    match (identity.load(dir, nick)) {
+        Result.Ok(id) => id,
+        Result.Err(e) => panic(e),
+    }
+}
+
+fn file_mode(path: string) -> int {
+    match (fs.stat(path)) {
+        Result.Ok(st) => st.mode & 0o777,
+        Result.Err(e) => panic(e),
+    }
+}
+
+@test
+fn hello_handshake_over_localhost() {
+    let dir = temp_config();
+    let id = load_identity(dir, "smoke");
+    let listener = match (net.tcp_listen("127.0.0.1", 0)) {
+        Result.Ok(l) => l,
+        Result.Err(e) => panic(e),
+    };
+    let port = net.local_port(listener);
+    let done: Channel<string> = Channel.new();
+    spawn(fn() {
+        match (net.tcp_accept(listener)) {
+            Result.Err(e) => send(done, "accept err " + e),
+            Result.Ok(h) => {
+                let c = framing.from_handle(h);
+                match (protocol.make_hello(id, port)) {
+                    Result.Err(e) => send(done, "hello " + e),
+                    Result.Ok(hello) => match (protocol.send_hello(c, hello)) {
+                        Result.Err(e) => send(done, "send " + e),
+                        Result.Ok(c1) => match (protocol.recv_hello(c1)) {
+                            Result.Err(e) => send(done, "recv " + e),
+                            Result.Ok(_) => send(done, "listener ok"),
                         },
-                        Result.Ok(h) => {
-                            var c = framing.from_handle(h);
-                            match (protocol.recv_hello(c)) {
-                                Result.Err(e) => {
-                                    eprint("dial recv " + e);
-                                    return 1;
-                                },
-                                Result.Ok(pair) => {
-                                    let (c1, remote) = pair;
-                                    print("remote nick " + remote.nick);
-                                    match (protocol.make_hello(id, port)) {
-                                        Result.Err(e) => {
-                                            eprint(e);
-                                            return 1;
-                                        },
-                                        Result.Ok(hello) => {
-                                            match (protocol.send_hello(c1, hello)) {
-                                                Result.Err(e) => {
-                                                    eprint(e);
-                                                    return 1;
-                                                },
-                                                Result.Ok(_) => {
-                                                    match (recv(done)) {
-                                                        Option.Some(s) => {
-                                                            print(s);
-                                                            0
-                                                        },
-                                                        Option.None => {
-                                                            eprint("no done");
-                                                            1
-                                                        },
-                                                    }
-                                                },
-                                            }
-                                        },
-                                    }
-                                },
-                            }
-                        },
-                    }
-                },
-            }
+                    },
+                }
+            },
+        }
+    });
+    let h = match (net.tcp_connect("127.0.0.1", port)) {
+        Result.Ok(x) => x,
+        Result.Err(e) => panic(e),
+    };
+    let pair = match (protocol.recv_hello(framing.from_handle(h))) {
+        Result.Ok(p) => p,
+        Result.Err(e) => panic(e),
+    };
+    let (c1, remote) = pair;
+    assert_eq(remote.nick, "smoke");
+    assert(remote.pubkey == id.pubkey);
+    match (protocol.make_hello(id, port)) {
+        Result.Err(e) => panic(e),
+        Result.Ok(hello) => match (protocol.send_hello(c1, hello)) {
+            Result.Err(e) => panic(e),
+            Result.Ok(_) => { },
         },
     }
+    match (recv(done)) {
+        Option.Some(s) => assert_eq(s, "listener ok"),
+        Option.None => panic("no done"),
+    }
+    close(h);
+    close(listener);
+    let _ = fs.remove_all(dir);
+}
+
+@test
+fn identity_persists_with_a_private_seed() {
+    let dir = temp_config();
+    let a = load_identity(dir, "ana");
+    assert_eq(file_mode(dir + "/identity.seed"), 0o600);
+    // Reloading keeps the same key and the persisted nick.
+    let b = load_identity(dir, "");
+    assert(a.pubkey == b.pubkey);
+    assert_eq(b.nick, "ana");
+    let _ = fs.remove_all(dir);
+}
+
+@test
+fn loading_tightens_a_world_readable_seed() {
+    let dir = temp_config();
+    let a = load_identity(dir, "ana");
+    let seed = dir + "/identity.seed";
+    let _ = fs.chmod(seed, 0o644);
+    let b = load_identity(dir, "");
+    assert(a.pubkey == b.pubkey);
+    assert_eq(file_mode(seed), 0o600);
+    let _ = fs.remove_all(dir);
 }

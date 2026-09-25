@@ -31,11 +31,9 @@ pub fn enter(name: string, invite: string) -> Result<Chan, string> {
     } else {
         match (crypto_chan.derive_key(inv)) {
             Result.Err(e) => Result.Err(e),
-            Result.Ok(key) => Result.Ok(Chan {
-                name: n,
-                invite: crypto_chan.normalize_invite(inv),
-                key: Option.Some(key),
-            }),
+            Result.Ok(key) => Result.Ok(
+                Chan { name: n, invite: crypto_chan.normalize_invite(inv), key: Option.Some(key) }
+            ),
         }
     }
 }

@@ -4,7 +4,9 @@ import std/fs;
 import std/hex;
 
 pub const SEED_LEN: int = 32;
+
 pub const PUBKEY_LEN: int = 32;
+
 pub const SIG_LEN: int = 64;
 
 const X25519_INFO: bytes = b"msg-identity-x25519-v1";
@@ -30,6 +32,7 @@ pub fn default_config_dir() -> string {
 }
 
 fn seed_path(dir: string) -> string { dir + "/identity.seed" }
+
 fn nick_path(dir: string) -> string { dir + "/nick" }
 
 fn empty_bytes() -> bytes {
@@ -50,13 +53,15 @@ pub fn complete_identity(seed: bytes, pubkey: bytes, nick: string) -> Result<Ide
         Result.Err(e) => Result.Err(e),
         Result.Ok(x_secret) => match (crypto.x25519_public_key(x_secret)) {
             Option.None => Result.Err("x25519 public key failed"),
-            Option.Some(x_pubkey) => Result.Ok(Identity {
-                seed: seed,
-                pubkey: pubkey,
-                x_secret: x_secret,
-                x_pubkey: x_pubkey,
-                nick: nick,
-            }),
+            Option.Some(x_pubkey) => Result.Ok(
+                Identity {
+                    seed: seed,
+                    pubkey: pubkey,
+                    x_secret: x_secret,
+                    x_pubkey: x_pubkey,
+                    nick: nick
+                }
+            ),
         },
     }
 }
@@ -180,13 +185,15 @@ pub fn set_nick(id: Identity, config_dir: string, nick: string) -> Result<Identi
         Result.Err(e) => Result.Err(e),
         Result.Ok(_) => match (fs.write_file(nick_path(config_dir), n + "\n")) {
             Result.Err(e) => Result.Err(e),
-            Result.Ok(_) => Result.Ok(Identity {
-                seed: id.seed,
-                pubkey: id.pubkey,
-                x_secret: id.x_secret,
-                x_pubkey: id.x_pubkey,
-                nick: n,
-            }),
+            Result.Ok(_) => Result.Ok(
+                Identity {
+                    seed: id.seed,
+                    pubkey: id.pubkey,
+                    x_secret: id.x_secret,
+                    x_pubkey: id.x_pubkey,
+                    nick: n
+                }
+            ),
         },
     }
 }

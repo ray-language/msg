@@ -10,7 +10,9 @@ fn usage() {
         "  msg [--listen HOST:PORT] [--peer HOST:PORT]... [--nick NAME] [--config DIR] [--advertise HOST]"
     );
     eprint("");
-    eprint("  --listen     bind address (default 0.0.0.0:" + to_string(protocol.DEFAULT_PORT) + ")");
+    eprint(
+        "  --listen     bind address (default 0.0.0.0:" + to_string(protocol.DEFAULT_PORT) + ")"
+    );
     eprint("  --peer       bootstrap peer (repeatable; also loaded from config/peers)");
     eprint("  --nick       display name (persisted)");
     eprint("  --config     identity directory (default ~/.config/msg)");
@@ -100,14 +102,16 @@ fn main() -> int {
                     eprint("identity: " + e);
                     1
                 },
-                Result.Ok(id) => mesh.run(mesh.Opts {
-                    id: id,
-                    config_dir: config,
-                    bind_host: bind_host,
-                    bind_port: bind_port,
-                    advertise: advertise,
-                    peers: peers,
-                }),
+                Result.Ok(id) => mesh.run(
+                    mesh.Opts {
+                        id: id,
+                        config_dir: config,
+                        bind_host: bind_host,
+                        bind_port: bind_port,
+                        advertise: advertise,
+                        peers: peers
+                    }
+                ),
             }
         },
     }

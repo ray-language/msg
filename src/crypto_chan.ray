@@ -3,7 +3,9 @@ import std/crypto;
 import std/hex;
 
 const INFO: bytes = b"msg-chan-v1";
+
 const SALT_LEN: int = 16;
+
 const SECRET_LEN: int = 16;
 
 /// Strips dashes/spaces and lowercases invite hex.
@@ -53,20 +55,22 @@ pub fn derive_key(invite: string) -> Result<bytes, string> {
 
 pub fn nonce_for(seq: int) -> bytes {
     // seq u64 BE ‖ 4 zero bytes
-    bytes_of([
-        (seq >> 56) & 255,
-        (seq >> 48) & 255,
-        (seq >> 40) & 255,
-        (seq >> 32) & 255,
-        (seq >> 24) & 255,
-        (seq >> 16) & 255,
-        (seq >> 8) & 255,
-        seq & 255,
-        0,
-        0,
-        0,
-        0
-    ])
+    bytes_of(
+        [
+            (seq >> 56) & 255,
+            (seq >> 48) & 255,
+            (seq >> 40) & 255,
+            (seq >> 32) & 255,
+            (seq >> 24) & 255,
+            (seq >> 16) & 255,
+            (seq >> 8) & 255,
+            seq & 255,
+            0,
+            0,
+            0,
+            0
+        ]
+    )
 }
 
 pub fn aad_for(channel: string, origin_pub: bytes, seq: int) -> bytes {

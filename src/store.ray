@@ -60,16 +60,24 @@ pub fn merge_peers(cli: [string], saved: [string]) -> [string] {
     for a in cli {
         var seen = false;
         for e in out {
-            if (e == a) { seen = true; }
+            if (e == a) {
+                seen = true;
+            }
         }
-        if (!seen) { out.push(a); }
+        if (!seen) {
+            out.push(a);
+        }
     }
     for a in saved {
         var seen = false;
         for e in out {
-            if (e == a) { seen = true; }
+            if (e == a) {
+                seen = true;
+            }
         }
-        if (!seen) { out.push(a); }
+        if (!seen) {
+            out.push(a);
+        }
     }
     out
 }

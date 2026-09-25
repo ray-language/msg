@@ -1,18 +1,22 @@
 // Cache LRU de msg_id para deduplicar gossip.
 import std/hex;
+import std/collections/deque;
+from std/collections/deque import Deque;
 
 const DEFAULT_LIMIT: int = 10000;
 
 /// Seen-message cache keyed by hex(msg_id).
 pub struct Cache {
     map: Map<string, int>,
-    order: [string],
+    /// Insertion order, oldest first (O(1) eviction from the front).
+    order: Deque<string>,
     limit: int,
 }
 
 pub fn new() -> Cache {
     let m: Map<string, int> = Map.new();
-    Cache { map: m, order: [], limit: DEFAULT_LIMIT }
+    let order: Deque<string> = deque.new();
+    Cache { map: m, order: order, limit: DEFAULT_LIMIT }
 }
 
 /// Returns true if this id was already seen; otherwise records it and returns false.
@@ -22,18 +26,16 @@ pub fn check_and_insert(c: Cache, msg_id: bytes) -> bool {
         true
     } else {
         c.map.insert(key, 1);
-        c.order.push(key);
+        c.order.push_back(key);
         while (c.order.len() > c.limit) {
-            let old = c.order[0];
-            // shift left
-            var rest: [string] = [];
-            var i = 1;
-            while (i < c.order.len()) {
-                rest.push(c.order[i]);
-                i = i + 1;
+            match (c.order.pop_front()) {
+                Option.Some(old) => {
+                    c.map.remove(old);
+                },
+                Option.None => {
+                    break;
+                },
             }
-            c.order = rest;
-            c.map.remove(old);
         }
         false
     }
@@ -45,4 +47,17 @@ fn dedup_works() {
     let id = b"\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\x0c\r\x0e\x0f\x10" + b"\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f ";
     assert(!check_and_insert(c, id));
     assert(check_and_insert(c, id));
+}
+
+@test
+fn evicts_the_oldest_past_the_limit() {
+    var c = new();
+    c.limit = 2;
+    assert(!check_and_insert(c, b"a"));
+    assert(!check_and_insert(c, b"b"));
+    assert(!check_and_insert(c, b"c"));
+    assert_eq(c.order.len(), 2);
+    // "a" was evicted, so it is new again; "c" is still remembered.
+    assert(check_and_insert(c, b"c"));
+    assert(!check_and_insert(c, b"a"));
 }

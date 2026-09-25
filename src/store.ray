@@ -40,11 +40,8 @@ pub fn remember_peer(dir: string, addr: string) {
     if (a.len() == 0 || a.starts_with("inbound:")) {
         return;
     }
-    let existing = load_peers(dir);
-    for e in existing {
-        if (e == a) {
-            return;
-        }
+    if (load_peers(dir).contains(a)) {
+        return;
     }
     match (ensure_dir(dir)) {
         Result.Err(_) => { },
@@ -57,25 +54,8 @@ pub fn remember_peer(dir: string, addr: string) {
 /// Merges CLI peers with saved ones (CLI first, then file; dedup).
 pub fn merge_peers(cli: [string], saved: [string]) -> [string] {
     var out: [string] = [];
-    for a in cli {
-        var seen = false;
-        for e in out {
-            if (e == a) {
-                seen = true;
-            }
-        }
-        if (!seen) {
-            out.push(a);
-        }
-    }
-    for a in saved {
-        var seen = false;
-        for e in out {
-            if (e == a) {
-                seen = true;
-            }
-        }
-        if (!seen) {
+    for a in cli + saved {
+        if (!out.contains(a)) {
             out.push(a);
         }
     }

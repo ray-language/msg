@@ -70,6 +70,8 @@ DM (tras ver el nick en la malla):
 ## Identidad y discovery
 
 Por defecto en `~/.config/msg/` (`identity.seed`, `nick`, `peers`). Override: `--config DIR` o `MSG_HOME`.
+`identity.seed` es la clave privada: se crea con permisos `0600`, y una seed antigua más
+abierta se restringe a `0600` al cargarla.
 
 | Flag | Rol |
 |------|-----|
@@ -100,7 +102,6 @@ src/
 ## Tests
 
 ```sh
-ray test src/commands.ray
-ray test src/crypto_dm.ray
-# (y el resto de módulos con @test)
+ray test                                   # 19 tests: módulos + tests/ (handshake Hello real por localhost)
+ray build --native --release -o msg        # binario nativo
 ```

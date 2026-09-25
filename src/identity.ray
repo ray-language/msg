@@ -9,6 +9,9 @@ pub const PUBKEY_LEN: int = 32;
 
 pub const SIG_LEN: int = 64;
 
+/// Owner read/write only: the seed is the private key.
+const SEED_MODE: int = 0o600;
+
 const X25519_INFO: bytes = b"msg-identity-x25519-v1";
 
 /// Local peer identity: Ed25519 seed/pubkey, derived X25519 pair, and display nick.
@@ -35,14 +38,9 @@ fn seed_path(dir: string) -> string { dir + "/identity.seed" }
 
 fn nick_path(dir: string) -> string { dir + "/nick" }
 
-fn empty_bytes() -> bytes {
-    let none: [int] = [];
-    bytes_of(none)
-}
-
 /// Derives the long-term X25519 secret from the Ed25519 seed (HKDF).
 pub fn derive_x25519_secret(seed: bytes) -> Result<bytes, string> {
-    match (crypto.hkdf_sha256(empty_bytes(), seed, X25519_INFO, SEED_LEN)) {
+    match (crypto.hkdf_sha256(b"", seed, X25519_INFO, SEED_LEN)) {
         Option.None => Result.Err("x25519 derive failed"),
         Option.Some(sk) => Result.Ok(sk),
     }
@@ -80,9 +78,24 @@ fn ensure_dir(dir: string) -> Result<int, string> {
     }
 }
 
+/// Restricts the seed file to its owner (seeds written by older versions got
+/// the default umask, typically world-readable).
+fn protect_seed(path: string) -> Result<int, string> {
+    match (fs.stat(path)) {
+        Result.Ok(st) => {
+            if ((st.mode & 0o077) == 0) {
+                return Result.Ok(0);
+            }
+        },
+        Result.Err(_) => { },
+    }
+    fs.chmod(path, SEED_MODE)
+}
+
 fn load_or_create_seed(dir: string) -> Result<bytes, string> {
     let path = seed_path(dir);
     if (fs.exists(path)) {
+        let _ = protect_seed(path);
         match (fs.read_file_bytes(path)) {
             Result.Err(e) => Result.Err(e),
             Result.Ok(raw) => {
@@ -102,7 +115,10 @@ fn load_or_create_seed(dir: string) -> Result<bytes, string> {
             Result.Err(e) => Result.Err(e),
             Result.Ok(_) => match (fs.write_file_bytes(path, seed)) {
                 Result.Err(e) => Result.Err(e),
-                Result.Ok(_) => Result.Ok(seed),
+                Result.Ok(_) => match (fs.chmod(path, SEED_MODE)) {
+                    Result.Err(e) => Result.Err(e),
+                    Result.Ok(_) => Result.Ok(seed),
+                },
             },
         }
     }

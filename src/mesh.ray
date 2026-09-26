@@ -276,6 +276,8 @@ fn accept_loop(
     }
 }
 
+const DIAL_TIMEOUT_MS: int = 5000;
+
 fn dial_one(
     hub: Channel<Msg>,
     id: identity.Identity,
@@ -288,7 +290,9 @@ fn dial_one(
         Result.Err(e) => ui.info("bad peer " + addr + ": " + e),
         Result.Ok(hp) => {
             let (host, port) = hp;
-            match (net.tcp_connect(host, port)) {
+            // Parks only this fiber (raylang 1.27.13): a peer that drops SYNs no
+            // longer stalls the mesh for the OS default (~75 s).
+            match (net.tcp_connect_timeout(host, port, DIAL_TIMEOUT_MS)) {
                 Result.Err(e) => ui.info("connect " + addr + " failed: " + e),
                 Result.Ok(h) => {
                     spawn_link(hub, id, listen_port, h, addr, false, peer_id);
@@ -818,23 +822,20 @@ fn hub_loop(
                     Msg.LinkDown(pid) => {
                         var nick = "?";
                         var pk = "";
-                        // Not named `addr`: a `var` sharing its name with the
-                        // closure-captured `addr` binding of the TryDial arm breaks
-                        // the native build (raylang 1.27.11 codegen bug).
-                        var down_addr = "";
+                        var addr = "";
                         for p in state.peers {
                             if (p.id == pid) {
                                 nick = p.nick;
                                 pk = pub_hex(p.pubkey);
-                                down_addr = p.addr;
+                                addr = p.addr;
                             }
                         }
                         state.peers = remove_peer(state.peers, pid);
                         if (pk.len() > 0) {
                             state.linked.remove(pk);
                         }
-                        if (down_addr.len() > 0 && !down_addr.starts_with("inbound:")) {
-                            state.trying.remove(down_addr);
+                        if (addr.len() > 0 && !addr.starts_with("inbound:")) {
+                            state.trying.remove(addr);
                         }
                         ui.info("peer down: " + nick);
                         ui.prompt();

@@ -85,7 +85,7 @@ fn hello_handshake_over_localhost() {
 fn identity_persists_with_a_private_seed() {
     let dir = temp_config();
     let a = load_identity(dir, "ana");
-    assert_eq(file_mode(dir + "/identity.seed"), 0o600);
+    assert_eq_msg(file_mode(dir + "/identity.seed"), 0o600, "new seed mode, want 0o600 = 384");
     // Reloading keeps the same key and the persisted nick.
     let b = load_identity(dir, "");
     assert(a.pubkey == b.pubkey);
@@ -101,6 +101,6 @@ fn loading_tightens_a_world_readable_seed() {
     let _ = fs.chmod(seed, 0o644);
     let b = load_identity(dir, "");
     assert(a.pubkey == b.pubkey);
-    assert_eq(file_mode(seed), 0o600);
+    assert_eq_msg(file_mode(seed), 0o600, "seed mode after load, want 0o600 = 384");
     let _ = fs.remove_all(dir);
 }
